@@ -7,12 +7,13 @@ def parse_arguments():
     parser.add_argument("fasta_file", type=str, help="Path to input FASTA file containing sequences")
     parser.add_argument("-m", "--matrix", type=str, help="Path to scoring matrix file in Phylip-like format", required=True)
     parser.add_argument("-g", "--gap", type=int, help="Gap penalty", required=True)
+    parser.add_argument("-e", "--extension", type=int, help="Gap extension penalty", required=True)
     parser.add_argument('--hide-alignments', action='store_true', help='Hide aligned sequences')
     
     args = parser.parse_args()
     
-    if args.matrix is None or args.gap is None:
-        parser.error("-m <matrix_file> or -g <gapscore> is missing")
+    if args.matrix is None or args.gap is None or args.extension is None:
+        parser.error("-m <matrix_file> , -g <gapscore> or -e <extension_penalty> is missing")
 
     return args
 
@@ -65,61 +66,74 @@ def read_phylip_like_matrix(matrix_file):
 # g is gap cost, sub_matrix the substitution_matrix
 # and show_alignment defines if the alignment should be included
 
-def global_linear(A, B, g, sub_matrix, hide_alignments=True):
+def global_affine(A, B, gapstart, gapextend, substitution_matrix, hide_alignments=True):
     A = A.upper()
-    B = B.upper()
-    
-    # Get cost of match/mismatch
+    B = B.upper() 
+
+    # Get cost out of substitution matrix
     def cost(x, y):
-        return sub_matrix[x][y]
+        return substitution_matrix[x][y]
+
+    def g(k):
+        return gapstart+gapextend*k 
     
-    # Recursively fill out the matrix
-    def C(i, j):
-        if T[i][j] is None:
-            if i == 0 and j == 0: # Base case
-                T[i][j] = 0
-
-            elif i == 0: # Only seq A traversed
-                T[i][j] = C(i, j - 1) + g
-                
-            elif j == 0: # Only seq B traversed
-                T[i][j] = C(i - 1, j) + g
-
-            else: # Look at 3 prior connected cells
-                match = C(i-1, j-1) + cost(A[i-1], B[j-1]) # diagonal move
-                insert = C(i, j-1) + g 
-                deletion = C(i-1, j) + g 
-                T[i][j] = min(match, insert, deletion)
-        return T[i][j]
-
+    # Initialize matrix
     n = len(A)
     m = len(B)
-    T = [[None] * (m + 1) for _ in range(n + 1)] # make table T
 
-    opt_cost = C(n, m) # optimal cost
+    S = [[float('inf')] * (m + 1) for _ in range(n + 1)] # since minimization we use 'inf'
+    D = [[float('inf')] * (m + 1) for _ in range(n + 1)]
+    I = [[float('inf')] * (m + 1) for _ in range(n + 1)]
+    
+    S[0][0] = 0 # Nothing aligned
 
+    # calcing edges
+    for i in range(1, n + 1):
+        D[i][0] = gapstart + gapextend*i
+        S[i][0] = D[i][0]
+    for j in range(1, m + 1):
+        I[0][j] = gapstart + gapextend*j
+        S[0][j] = I[0][j]
+    
+    
+    # Loop through the matrices
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            D[i][j] = min(S[i-1][j] + gapstart + gapextend, D[i-1][j] + gapextend) # when moving left (start new vs extension)
+            I[i][j] = min(S[i][j-1] + gapstart + gapextend, I[i][j-1] + gapextend) # Moving down
+            S[i][j] = min(S[i-1][j-1] + cost(A[i-1], B[j-1]), D[i][j], I[i][j]) # compare diagonal move vs del vs insert
+            
+
+    # print('\n'.join(' '.join(map(str, sub)) for sub in S)) # Print matrix
+
+    opt_cost = S[-1][-1]
     if not hide_alignments:
-        return opt_cost, []
-        
-    # Now to find the possible alignments with backtracking - does not run in quadratic time, but only way i can think of to show all alignemnts
-    def backtracking(n, m, aligned_seq1="", aligned_seq2=""):
-        if n == 0 and m == 0: # Base case
-            return [[aligned_seq1, aligned_seq2]]
+        return S[-1][-1]
     
-        alignments = [] # initialize list to hold pairs of seqs
     
-        if n > 0 and m > 0 and T[n][m] == T[n - 1][m - 1] + cost(A[n - 1], B[m - 1]): # DIAGONAL move
-            alignments.extend(backtracking(n - 1, m - 1, A[n - 1] + aligned_seq1, B[m - 1] + aligned_seq2)) # recursively call backtracking 
-        if n > 0 and T[n][m] == T[n - 1][m] + g: # LEFT move
-            alignments.extend(backtracking(n - 1, m, A[n - 1] + aligned_seq1, "-" + aligned_seq2))
-        if m > 0 and T[n][m] == T[n][m - 1] + g: # VERTICAL move
-            alignments.extend(backtracking(n, m - 1, "-" + aligned_seq1, B[m - 1] + aligned_seq2))
-    
+    # Backtracking - Needs to be recursive to get all the alignments 
+    # The iterative version only gives one:
+    def backtrack_recursive(A, B, S, i, j, alignmentA='', alignmentB='', alignments=None):
+        if alignments is None: # initialize new lst
+            alignments = []
+        if i == 0 and j == 0: # base case 
+            alignments.append([alignmentA, alignmentB])
+        else: 
+            if i > 0 and j > 0 and S[i][j] == S[i-1][j-1] + cost(A[i-1], B[j-1]): # diagonal move
+                backtrack_recursive(A, B, S, i-1, j-1, A[i-1] + alignmentA, B[j-1] + alignmentB, alignments)
+            k = 1 # if not diagonal move then gap, k need to determine gapchunk size
+            while True: # each iteration represents finding a consecutive gap, increasing k+=1
+                if k > i and k > j: # termination of while loop
+                    break
+                if i >= k and S[i][j] == S[i-k][j] + g(k): # gap in B
+                    backtrack_recursive(A, B, S, i-k, j, A[i-k:i] + alignmentA, '-'*k + alignmentB, alignments)
+                if j >= k and S[i][j] == S[i][j-k] + g(k): # gap in A
+                    backtrack_recursive(A, B, S, i, j-k, '-'*k + alignmentA, B[j-k:j] + alignmentB, alignments)
+                k += 1 
         return alignments
-
-    aligned_sequences = backtracking(n, m)
     
-    return opt_cost, aligned_sequences
+    alignments = backtrack_recursive(A, B, S, len(A), len(B))
+    return opt_cost, alignments
 
 
 # write the output to a fasta file 
@@ -142,6 +156,7 @@ def main():
     fasta_file = args.fasta_file
     matrix_file = args.matrix
     gap_penalty = args.gap
+    extension_penalty = args.extension
     hide_alignments = args.hide_alignments
 
     sequences = read_fasta_file(fasta_file)
@@ -150,18 +165,21 @@ def main():
     sequence1 = sequences["seq1"]  # Assuming the sequence IDs are known
     sequence2 = sequences["seq2"]
 
-    aligned_sequences = global_linear(sequence1, sequence2, gap_penalty, scoring_matrix, hide_alignments = not hide_alignments)
+    aligned_sequences = global_affine(sequence1, sequence2, gap_penalty, extension_penalty, scoring_matrix, hide_alignments = not hide_alignments)
     
-    # Print the aligned sequences in FASTA alignment format
-    for i in aligned_sequences:    
-        if isinstance(i, list):
-            for j in i:
-                print(j)
-        else:
-            print("Optimal cost: {}".format(i))
+    # Print the aligned sequences to terminal
+    if isinstance(aligned_sequences, int):
+        print("Optimal cost: {}".format(aligned_sequences))
+    else:    
+        for i in aligned_sequences:    
+            if isinstance(i, list):
+                for j in i:
+                    print(j)
+            else:
+                print("Optimal cost: {}".format(i))
     
     # Use the write function to make putput file
-    write_alignment_to_fasta(aligned_sequences, "linear_aligned_sequences.fasta")
+    write_alignment_to_fasta(aligned_sequences, "affine_aligned_sequences.fasta")
 
 if __name__ == "__main__":
     main()
