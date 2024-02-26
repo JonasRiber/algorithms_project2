@@ -19,4 +19,8 @@ for i in range(30):
 # Plotting the runtimes
 plt.rcParams['figure.figsize'] = [10, 6]
 plt.plot(range(1, len(runtimes) + 1), runtimes, marker = 'o')
+plt.xlabel('Length of Input Sequences')
+plt.ylabel('Runtime [Sec]')
+plt.title('Runtime of Function "global_linear"')
+plt.grid(True)
 plt.show()
