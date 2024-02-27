@@ -1,8 +1,8 @@
 import time
 import matplotlib.pyplot as plt
-from jonas_files.global_align_linear import global_linear
-from jonas_files.global_align_affine import global_affine
-from jonas_files.global_align_linear import read_phylip_like_matrix
+from global_align_linear import global_linear
+from global_align_affine import global_affine
+from global_align_linear import read_phylip_like_matrix
 
 scoring_matrix = read_phylip_like_matrix("./jonas_files/substitution_matrix_phylip.txt")
 
